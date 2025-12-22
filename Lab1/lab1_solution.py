@@ -14,98 +14,137 @@ DATA_DIR = "data"
 OUT_DIR = "results"
 
 
-def ensure_empty_dir(folder):
-    os.makedirs(folder, exist_ok=True)
+def clear_folder(folder):
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
     for name in os.listdir(folder):
         path = os.path.join(folder, name)
         if os.path.isfile(path):
             os.remove(path)
 
 
-def stdev_or_zero(values):
-    return statistics.stdev(values) if len(values) >= 2 else 0.0  # иначе StatisticsError [web:4]
+def safe_stdev(values):
+    if len(values) < 2:
+        return 0.0
+    return statistics.stdev(values)
 
 
 def generate_files():
     paths = []
+
     for i in range(1, FILES_COUNT + 1):
-        path = os.path.join(DATA_DIR, f"sample_{i}.csv")
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            for _ in range(ROWS_PER_FILE):
-                w.writerow([random.choice(LETTERS), random.uniform(VALUE_MIN, VALUE_MAX)])
+        path = os.path.join(DATA_DIR, "sample_" + str(i) + ".csv")
+        f = open(path, "w", encoding="utf-8", newline="")
+        w = csv.writer(f)
+
+        for _ in range(ROWS_PER_FILE):
+            letter = random.choice(LETTERS)
+            value = random.uniform(VALUE_MIN, VALUE_MAX)
+            w.writerow([letter, value])
+
+        f.close()
         paths.append(path)
+
     return paths
 
 
-def compute_stats_for_file(path):
-    groups = {}  # letter -> list[float]
+def process_file(src_path, out_path):
+    groups = {}
 
-    with open(path, "r", newline="", encoding="utf-8") as f:
+    f = open(src_path, "r", encoding="utf-8", newline="")
+    r = csv.reader(f)
+
+    for row in r:
+        if not row:
+            continue
+
+        letter = row[0].strip()
+        if letter not in LETTERS:
+            continue
+
+        try:
+            value = float(row[1])
+        except:
+            continue
+
+        if letter not in groups:
+            groups[letter] = []
+        groups[letter].append(value)
+
+    f.close()
+
+    out = open(out_path, "w", encoding="utf-8", newline="")
+    w = csv.writer(out)
+
+    for letter in LETTERS:
+        if letter in groups and len(groups[letter]) > 0:
+            med = statistics.median(groups[letter])
+            sd = safe_stdev(groups[letter])
+            w.writerow([letter, med, sd])
+
+    out.close()
+
+
+def process_file_task(task):
+    # task = (src_path, out_path)
+    process_file(task[0], task[1])
+    return task[1]  # вернём путь к результату
+
+
+def aggregate(result_paths, final_path):
+    medians = {}
+
+    for p in result_paths:
+        f = open(p, "r", encoding="utf-8", newline="")
         r = csv.reader(f)
+
         for row in r:
             if not row:
                 continue
+
             letter = row[0].strip()
-            value = float(row[1])
-            if letter in LETTERS:
-                groups.setdefault(letter, []).append(value)
-
-    result = {}  # letter -> (median, stdev)
-    for letter, values in groups.items():
-        result[letter] = (statistics.median(values), stdev_or_zero(values))
-    return result
-
-
-def save_primary(out_path, stats_map):
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        for letter in LETTERS:
-            if letter in stats_map:
-                med, sd = stats_map[letter]
-                w.writerow([letter, med, sd])
-
-
-def aggregate(primary_paths, final_path):
-    medians = {}  # letter -> list[median]
-
-    for p in primary_paths:
-        with open(p, "r", newline="", encoding="utf-8") as f:
-            r = csv.reader(f)
-            for row in r:
-                if not row:
-                    continue
-                letter = row[0].strip()
-                median_value = float(row[1])
-                if letter in LETTERS:
-                    medians.setdefault(letter, []).append(median_value)
-
-    with open(final_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        for letter in LETTERS:
-            vals = medians.get(letter, [])
-            if not vals:
+            if letter not in LETTERS:
                 continue
-            w.writerow([letter, statistics.median(vals), stdev_or_zero(vals)])
+
+            try:
+                median_value = float(row[1])
+            except:
+                continue
+
+            if letter not in medians:
+                medians[letter] = []
+            medians[letter].append(median_value)
+
+        f.close()
+
+    out = open(final_path, "w", encoding="utf-8", newline="")
+    w = csv.writer(out)
+
+    for letter in LETTERS:
+        if letter in medians and len(medians[letter]) > 0:
+            med = statistics.median(medians[letter])
+            sd = safe_stdev(medians[letter])
+            w.writerow([letter, med, sd])
+
+    out.close()
 
 
 def main():
-    ensure_empty_dir(DATA_DIR)
-    ensure_empty_dir(OUT_DIR)
+    clear_folder(DATA_DIR)
+    clear_folder(OUT_DIR)
 
     sources = generate_files()
 
-    # Параллельная обработка файлов [web:24]
+    tasks = []
+    for i, src in enumerate(sources, start=1):
+        out_path = os.path.join(OUT_DIR, "result_" + str(i) + ".csv")
+        tasks.append((src, out_path))
+
     with ProcessPoolExecutor() as ex:
-        computed = list(ex.map(compute_stats_for_file, sources))
+        result_paths = list(ex.map(process_file_task, tasks))
 
-    primary_paths = []
-    for i, stats_map in enumerate(computed, start=1):
-        out_path = os.path.join(OUT_DIR, f"result_{i}.csv")
-        save_primary(out_path, stats_map)
-        primary_paths.append(out_path)
-
-    aggregate(primary_paths, os.path.join(OUT_DIR, "FINAL.csv"))
+    aggregate(result_paths, os.path.join(OUT_DIR, "FINAL.csv"))
 
 
 if __name__ == "__main__":
