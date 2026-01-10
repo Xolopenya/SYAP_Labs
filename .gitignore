@@ -17,3 +17,12 @@ results/
 
 .DS_Store
 Thumbs.db
+
+.env
+.env.*
+
+*.pid
+*.log
+
+Thumbs.db
+Desktop.ini
